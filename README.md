@@ -27,6 +27,18 @@ To build the included CLI tool:
 g++ -O3 -o revelio revelio.cpp
 ```
 
+## Benchmarking
+
+Revelio includes a dedicated benchmark suite that tests the solver against extremely difficult puzzles (e.g., from the `top95` dataset).
+
+```bash
+# Compile and run the benchmark
+g++ -O3 -o benchmark benchmark.cpp
+./benchmark
+```
+
+Expected output shows total time, average time per puzzle, and overall throughput (puzzles/sec).
+
 ## Usage
 
 ### Command Line
