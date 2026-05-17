@@ -14,18 +14,19 @@
 
 /**
  * @brief Revelio: A high-performance Sudoku solver.
- * Uses bitmasking, backtracking, and the Minimum Remaining Values (MRV) heuristic.
+ * Uses bitmasking, backtracking, and optimized Minimum Remaining Values (MRV).
  */
 class Revelio {
 public:
     using Board = std::array<int, 81>;
 
     Revelio() {
-        // Precompute box indices to avoid division in the hot loop
         for (int i = 0; i < 81; ++i) {
             int r = i / 9;
             int c = i % 9;
             box_map_[i] = (r / 3) * 3 + (c / 3);
+            row_map_[i] = r;
+            col_map_[i] = c;
         }
         reset();
     }
@@ -35,32 +36,37 @@ public:
         rows_.fill(0);
         cols_.fill(0);
         boxes_.fill(0);
+        empty_cells_.clear();
     }
 
-    /**
-     * @brief Load from iterators. Supports char ('1'-'9', '0', '.') or int.
-     */
     template <typename It>
     bool load(It begin, It end) {
         reset();
         int i = 0;
+        std::vector<int> initial_values;
         for (auto it = begin; it != end && i < 81; ++it, ++i) {
             int num;
             using val_type = std::decay_t<typename std::iterator_traits<It>::value_type>;
             if constexpr (std::is_same_v<val_type, char>) {
                 if (std::isdigit(static_cast<unsigned char>(*it))) num = *it - '0';
                 else if (*it == '.' || *it == '0') num = 0;
-                else { --i; continue; } // ignore formatting
+                else { --i; continue; }
             } else {
                 num = static_cast<int>(*it);
             }
-            
-            if (num < 0 || num > 9) return false;
-            if (num != 0) {
-                if (!set(i, num)) return false; // Invalid puzzle
+            initial_values.push_back(num);
+        }
+
+        if (i != 81) return false;
+
+        for (int idx = 0; idx < 81; ++idx) {
+            if (initial_values[idx] != 0) {
+                if (!set(idx, initial_values[idx])) return false;
+            } else {
+                empty_cells_.push_back(idx);
             }
         }
-        return i == 81;
+        return true;
     }
 
     template <typename Iterable>
@@ -71,21 +77,14 @@ public:
     bool loadFromFile(const std::string& filename) {
         std::ifstream file(filename);
         if (!file.is_open()) return false;
-        std::vector<char> values;
+        std::string content;
         char ch;
-        while (file >> ch && values.size() < 81) {
-            if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '.') {
-                values.push_back(ch);
-            }
-        }
-        return load(values);
+        while (file >> ch) content += ch;
+        return load(content);
     }
 
-    /**
-     * @brief Solve the puzzle using MRV backtracking.
-     */
     bool revelio() {
-        return backtrack();
+        return backtrack(0);
     }
 
     void display() const {
@@ -107,77 +106,86 @@ private:
     std::array<uint16_t, 9> cols_;
     std::array<uint16_t, 9> boxes_;
     std::array<int, 81> box_map_;
+    std::array<int, 81> row_map_;
+    std::array<int, 81> col_map_;
+    std::vector<int> empty_cells_;
 
     inline bool set(int idx, int num) {
-        int r = idx / 9;
-        int c = idx % 9;
-        int box = box_map_[idx];
         uint16_t bit = 1 << (num - 1);
-        if ((rows_[r] & bit) || (cols_[c] & bit) || (boxes_[box] & bit)) return false;
+        int r = row_map_[idx];
+        int c = col_map_[idx];
+        int b = box_map_[idx];
+        if ((rows_[r] & bit) || (cols_[c] & bit) || (boxes_[b] & bit)) return false;
         board_[idx] = num;
         rows_[r] |= bit;
         cols_[c] |= bit;
-        boxes_[box] |= bit;
+        boxes_[b] |= bit;
         return true;
     }
 
     inline void unset(int idx, int num) {
-        int r = idx / 9;
-        int c = idx % 9;
-        int box = box_map_[idx];
         uint16_t bit = 1 << (num - 1);
         board_[idx] = 0;
-        rows_[r] &= ~bit;
-        cols_[c] &= ~bit;
-        boxes_[box] &= ~bit;
+        rows_[row_map_[idx]] &= ~bit;
+        cols_[col_map_[idx]] &= ~bit;
+        boxes_[box_map_[idx]] &= ~bit;
     }
 
-    /**
-     * @brief Backtrack using the Minimum Remaining Values (MRV) heuristic.
-     * Selects the cell with the fewest possible legal moves first.
-     */
-    bool backtrack() {
-        int best_idx = -1;
+    bool backtrack(size_t current_pos) {
+        if (current_pos == empty_cells_.size()) return true;
+
+        // MRV: Find the empty cell with the fewest possibilities
+        size_t best_pos = current_pos;
         int min_choices = 10;
         uint16_t best_mask = 0;
 
-        // Find the cell with the minimum number of possibilities (MRV)
-        for (int i = 0; i < 81; ++i) {
-            if (board_[i] == 0) {
-                int r = i / 9;
-                int c = i % 9;
-                int box = box_map_[i];
-                uint16_t used = rows_[r] | cols_[c] | boxes_[box];
-                uint16_t possible = (~used) & 0x1FF;
-                
-                int count = __builtin_popcount(possible);
-                if (count == 0) return false; // Dead end
-                
-                if (count < min_choices) {
-                    min_choices = count;
-                    best_idx = i;
-                    best_mask = possible;
-                    if (count == 1) break; // Optimization: early exit if only one choice
-                }
+        for (size_t i = current_pos; i < empty_cells_.size(); ++i) {
+            int idx = empty_cells_[i];
+            uint16_t used = rows_[row_map_[idx]] | cols_[col_map_[idx]] | boxes_[box_map_[idx]];
+            uint16_t possible = (~used) & 0x1FF;
+            int count = __builtin_popcount(possible);
+            
+            if (count == 0) return false;
+            if (count < min_choices) {
+                min_choices = count;
+                best_pos = i;
+                best_mask = possible;
+                if (count == 1) break; 
             }
         }
 
-        if (best_idx == -1) return true; // Solved
+        // Swap the best cell to the current position to "fix" it for this branch
+        int target_idx = empty_cells_[best_pos];
+        std::swap(empty_cells_[current_pos], empty_cells_[best_pos]);
 
-        // Try numbers for the best cell
         while (best_mask) {
             int num_idx = __builtin_ctz(best_mask);
             int num = num_idx + 1;
-            best_mask &= ~(1 << num_idx); // Clear the bit we're trying
+            best_mask &= ~(1 << num_idx);
 
-            if (set(best_idx, num)) {
-                if (backtrack()) return true;
-                unset(best_idx, num);
-            }
+            // Directly update bitmasks to avoid redundant checks in set()
+            uint16_t bit = 1 << num_idx;
+            int r = row_map_[target_idx];
+            int c = col_map_[target_idx];
+            int b = box_map_[target_idx];
+
+            board_[target_idx] = num;
+            rows_[r] |= bit;
+            cols_[c] |= bit;
+            boxes_[b] |= bit;
+
+            if (backtrack(current_pos + 1)) return true;
+
+            rows_[r] &= ~bit;
+            cols_[c] &= ~bit;
+            boxes_[b] &= ~bit;
+            board_[target_idx] = 0;
         }
 
+        // Restore the swap for other branches
+        std::swap(empty_cells_[current_pos], empty_cells_[best_pos]);
         return false;
     }
 };
 
-#endif // REVELIO_HPP
+#endif
